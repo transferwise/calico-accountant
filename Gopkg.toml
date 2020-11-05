@@ -55,3 +55,7 @@
 [prune]
   go-tests = true
   unused-packages = true
+
+[[constraint]]
+  name = "go.uber.org/zap"
+  version = "1.16.0"

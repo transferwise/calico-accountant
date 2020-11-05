@@ -2,9 +2,9 @@ package metrics
 
 import (
 	"fmt"
+	"go.uber.org/zap"
 	"net/http"
 
-	"github.com/golang/glog"
 	"github.com/monzo/calico-accountant/iptables"
 	"github.com/monzo/calico-accountant/watch"
 	"github.com/prometheus/client_golang/prometheus"
@@ -55,7 +55,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	results, err := iptables.Scan(c.cw)
 	if err != nil {
-		glog.Errorf("Error scanning for metrics: %v", err)
+		zap.L().Error("Error scanning for metrics", zap.String("error", err.Error()))
 		return
 	}
 
@@ -70,7 +70,11 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	if !scrapeAllowed {
-		glog.Warningf("Dropping scrape; all %d counters are below minimum count of %d", len(results), c.minCounter)
+		zap.L().Warn(
+			"Dropping scrape, all counters are below minimum count",
+			zap.Int("scrape_count", len(results)),
+			zap.Int("min_scrape_count", c.minCounter),
+		)
 
 		droppedScrapeCounter.Inc()
 		return
@@ -79,7 +83,11 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	for _, result := range results {
 		err := parse(ch, result, c.cw)
 		if err != nil {
-			glog.Errorf("Cannot parse the result: %+v, error: %v", result, err)
+			zap.L().Error(
+				"Cannot parse the result",
+				zap.Object("result", result),
+				zap.String("error", err.Error()),
+			)
 		}
 	}
 }
@@ -146,6 +154,6 @@ func Run(cw watch.CalicoWatcher, port string, minCounter int) {
 	http.Handle("/metrics", handler)
 	err := http.ListenAndServe(fmt.Sprintf(":%v", port), nil)
 	if err != nil {
-		glog.Fatal(err) // exit the program if it fails to serve metrics
+		zap.L().Fatal("Failed to serve metrics", zap.String("error", err.Error()))
 	}
 }

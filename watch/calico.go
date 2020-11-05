@@ -1,11 +1,11 @@
 package watch
 
 import (
+	"go.uber.org/zap"
 	"os"
 	"strings"
 	"sync"
 
-	"github.com/golang/glog"
 	"github.com/projectcalico/felix/proto"
 	"github.com/projectcalico/felix/rules"
 	apiv3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
@@ -68,7 +68,7 @@ func New() (CalicoWatcher, error) {
 	cw.ws.Start()
 
 	<-cw.ready
-	glog.Info("Calico cache filled")
+	zap.L().Info("Calico cache filled")
 
 	return cw, nil
 }
@@ -126,7 +126,7 @@ func (cw *calicoWatcher) onWorkloadUpdate(up api.Update) {
 
 		// deletion
 		cw.workloadCacheMtx.Lock()
-		glog.V(2).Infof("Removing workload %s", up.Key.String())
+		zap.L().Info("Removing workload", zap.String("workload", up.Key.String()))
 		delete(cw.workloadCache, k)
 		cw.workloadCacheMtx.Unlock()
 		return
@@ -137,7 +137,7 @@ func (cw *calicoWatcher) onWorkloadUpdate(up api.Update) {
 		return
 	}
 
-	glog.V(2).Infof("Adding workload %s", up.Key.String())
+	zap.L().Info("Adding workload", zap.String("workload", up.Key.String()))
 	cw.workloadCacheMtx.Lock()
 	cw.workloadCache[k] = we
 	cw.workloadCacheMtx.Unlock()
@@ -152,14 +152,24 @@ func (cw *calicoWatcher) onPolicyUpdate(up api.Update) {
 	if up.Value == nil {
 		// deletion
 		cw.policyCacheMtx.Lock()
-		glog.V(2).Infof("Removing policy id %s with chain name %s, %s", id.Name, rules.PolicyChainName(rules.PolicyInboundPfx, id), rules.PolicyChainName(rules.PolicyOutboundPfx, id))
+		zap.L().Info(
+			"Removing policy",
+			zap.String("policy", id.Name),
+			zap.String("inbound_chain", rules.PolicyChainName(rules.PolicyInboundPfx, id)),
+			zap.String("outbound_chain", rules.PolicyChainName(rules.PolicyOutboundPfx, id)),
+		)
 		delete(cw.policyCache, rules.PolicyChainName(rules.PolicyInboundPfx, id))
 		delete(cw.policyCache, rules.PolicyChainName(rules.PolicyOutboundPfx, id))
 		cw.policyCacheMtx.Unlock()
 		return
 	}
 
-	glog.V(2).Infof("Storing policy id %s against chain names %s, %s", id.Name, rules.PolicyChainName(rules.PolicyInboundPfx, id), rules.PolicyChainName(rules.PolicyOutboundPfx, id))
+	zap.L().Info(
+		"Storing policy",
+		zap.String("policy", id.Name),
+		zap.String("inbound_chain", rules.PolicyChainName(rules.PolicyInboundPfx, id)),
+		zap.String("outbound_chain", rules.PolicyChainName(rules.PolicyOutboundPfx, id)),
+	)
 	cw.policyCacheMtx.Lock()
 	cw.policyCache[rules.PolicyChainName(rules.PolicyInboundPfx, id)] = id.Name
 	cw.policyCache[rules.PolicyChainName(rules.PolicyOutboundPfx, id)] = id.Name
@@ -171,16 +181,16 @@ func (cw *calicoWatcher) onPolicyUpdate(up api.Update) {
 // the node name.
 func getNodeName() string {
 	if nodeName, ok := os.LookupEnv("NODENAME"); ok {
-		glog.V(2).Infof("Using NODENAME environment variable: %s", nodeName)
+		zap.L().Info("Using NODENAME environment variable", zap.String("value", nodeName))
 		return nodeName
 	} else if nodeName := strings.ToLower(strings.TrimSpace(os.Getenv("HOSTNAME"))); nodeName != "" {
-		glog.V(2).Infof("Using HOSTNAME environment variable as node name: %s", nodeName)
+		zap.L().Info("Using HOSTNAME environment variable as node name", zap.String("value", nodeName))
 		return nodeName
 	} else if nodeName, err := names.Hostname(); err == nil {
-		glog.V(2).Infof("Using names.Hostname() as node name: %s", nodeName)
+		zap.L().Info("Using names.Hostname() as node name", zap.String("value", nodeName))
 		return nodeName
 	} else {
-		glog.Fatalf("Error getting hostname: %v", err)
+		zap.L().Fatal("Error getting hostname", zap.String("error", err.Error()))
 		// unreachable...
 		return ""
 	}

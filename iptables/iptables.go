@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"io"
 	"os/exec"
 	"regexp"
@@ -11,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/golang/glog"
 	"github.com/monzo/calico-accountant/watch"
 	apiv3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
 )
@@ -34,7 +35,7 @@ func chainTypeFromString(str string) ChainType {
 	case "tw":
 		return ToWorkLoad
 	default:
-		glog.Fatalf("Unsupported chain type: %s", str)
+		zap.L().Fatal("Unsupported chain type", zap.String("chain_type", str))
 		// unreachable
 		return 0
 	}
@@ -47,10 +48,20 @@ func (ct ChainType) String() string {
 	case FromWorkLoad:
 		return "fw"
 	default:
-		glog.Fatalf("Unsupported chain type: %d", ct)
+		zap.L().Fatal("Unsupported chain type", zap.String("chain_type", ct.String()))
 		// unreachable
 		return ""
 	}
+}
+
+func (result *Result) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	enc.AddString("pod_name", result.PodName)
+	enc.AddString("pod_namespace", result.PodNamespace)
+	enc.AddString("app_label", result.AppLabel)
+	enc.AddString("pod_ip", result.PodIP)
+	enc.AddString("target", result.Target)
+	enc.AddInt("pkt_count", result.PacketCount)
+	return nil
 }
 
 type Result struct {
@@ -92,17 +103,20 @@ func iptablesSave(interfaceToWorkload map[string]*apiv3.WorkloadEndpoint) ([]*Re
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		glog.Errorf("Failed to get iptables-save stdout pipe: %v", err)
+		zap.L().Error("Failed to get iptables-save stdout pipe", zap.String("error", err.Error()))
 		return nil, err
 	}
 	err = cmd.Start()
 	if err != nil {
 		// Failed even before we started, close the pipe.  (This would normally be done
 		// by Wait().
-		glog.Errorf("Failed to start iptables-save: %v", err)
+		zap.L().Error("Failed to start iptables-save", zap.String("error", err.Error()))
 		closeErr := stdout.Close()
 		if closeErr != nil {
-			glog.Errorf("Error closing iptables-save stdout after Start() failed: %v", err)
+			zap.L().Error(
+				"Error closing iptables-save stdout after Start() failed",
+				zap.String("error", err.Error()),
+			)
 		}
 		return nil, err
 	}
@@ -111,13 +125,13 @@ func iptablesSave(interfaceToWorkload map[string]*apiv3.WorkloadEndpoint) ([]*Re
 	if err != nil {
 		killErr := cmd.Process.Kill()
 		if killErr != nil {
-			glog.Errorf("Failed to kill iptables-save process: %v", killErr)
+			zap.L().Error("Failed to kill iptables-save process", zap.String("error", killErr.Error()))
 		}
 		return nil, err
 	}
 
 	if err := cmd.Wait(); err != nil {
-		glog.Errorf("iptables-save failed: %v", err)
+		zap.L().Error("iptables-save failed", zap.String("error", err.Error()))
 		return nil, err
 	}
 	return results, nil
@@ -141,10 +155,18 @@ func parseFrom(stdout io.Reader, interfaceToWorkload map[string]*apiv3.WorkloadE
 		line := dropScanner.Bytes()
 		dropCapture := dropPolicyRegex.FindSubmatch(line)
 		if dropCapture != nil {
-			glog.V(3).Infof("Found drop policy: %s, packet count: %s", string(dropCapture[2]), string(dropCapture[1]))
+			zap.L().Debug(
+				"Found drop policy chain",
+				zap.String("chain", string(dropCapture[2])),
+				zap.String("pkt_count", string(dropCapture[1])),
+			)
 			dropPacketCount, err := strconv.Atoi(string(dropCapture[1]))
 			if err != nil {
-				glog.Errorf("Error parsing dropped packet count for policy %s: %v", string(dropCapture[2]), err)
+				zap.L().Error(
+					"Error parsing dropped packet count for policy",
+					zap.String("chain", string(dropCapture[2])),
+					zap.String("error", err.Error()),
+				)
 				continue
 			}
 
@@ -168,7 +190,7 @@ func parseFrom(stdout io.Reader, interfaceToWorkload map[string]*apiv3.WorkloadE
 
 		packetCount, err := strconv.Atoi(string(captures[1]))
 		if err != nil {
-			glog.Errorf("Error parsing packet count: %v", err)
+			zap.L().Error("Error parsing packet count", zap.String("error", err.Error()))
 			continue
 		}
 
@@ -176,7 +198,7 @@ func parseFrom(stdout io.Reader, interfaceToWorkload map[string]*apiv3.WorkloadE
 		isAccept := bytes.Contains(line, acceptSlice)
 		target := string(captures[4])
 
-		if !(isDrop || isAccept) {
+		if !(isDrop || isAccept) && target != "DROP" {
 			lastTarget = target
 			continue
 		}
@@ -186,7 +208,7 @@ func parseFrom(stdout io.Reader, interfaceToWorkload map[string]*apiv3.WorkloadE
 
 		workload, ok := interfaceToWorkload[iface]
 		if !ok {
-			glog.Errorf("Couldn't find workload for interface: %s", iface)
+			zap.L().Error("Couldn't find workload for interface", zap.String("interface", iface))
 			continue
 		}
 
@@ -195,7 +217,11 @@ func parseFrom(stdout io.Reader, interfaceToWorkload map[string]*apiv3.WorkloadE
 		// use the packet count from the drop rule.
 		if packetCount == 0 {
 			if v, ok := dropChains[lastTarget]; ok {
-				glog.V(3).Infof("Using packet count %d from target %s instead of count %d", v.PacketCount, lastTarget, packetCount)
+				zap.L().Debug(
+					"Using packet count from drop policy chain instead",
+					zap.Int("pkt_count", v.PacketCount),
+					zap.String("chain", lastTarget),
+				)
 				packetCount = v.PacketCount
 				acceptType = AcceptedDrop
 			}
@@ -205,7 +231,14 @@ func parseFrom(stdout io.Reader, interfaceToWorkload map[string]*apiv3.WorkloadE
 		case isDrop:
 			result, err := buildResult(workload, Drop, typ, packetCount, target)
 			if err != nil {
-				glog.Errorf("Error building result from line '%s': %v", string(line), err)
+				zap.L().Error(
+					"Error building result from line",
+					zap.String("type", string(typ)),
+					zap.Int("pkt_count", packetCount),
+					zap.String("chain", target),
+					zap.String("line", string(line)),
+					zap.String("error", err.Error()),
+				)
 				continue
 			}
 			results = append(results, result)
@@ -213,7 +246,14 @@ func parseFrom(stdout io.Reader, interfaceToWorkload map[string]*apiv3.WorkloadE
 			// When we find an accept line, we care about the target on the previous line
 			result, err := buildResult(workload, acceptType, typ, packetCount, lastTarget)
 			if err != nil {
-				glog.Errorf("Error building result from line %s: %v", string(line), err)
+				zap.L().Error(
+					"Error building result from line",
+					zap.String("type", string(typ)),
+					zap.Int("pkt_count", packetCount),
+					zap.String("chain", lastTarget),
+					zap.String("line", string(line)),
+					zap.String("error", err.Error()),
+				)
 				continue
 			}
 			results = append(results, result)
@@ -221,7 +261,7 @@ func parseFrom(stdout io.Reader, interfaceToWorkload map[string]*apiv3.WorkloadE
 	}
 
 	if scanner.Err() != nil {
-		glog.Errorf("Failed to read iptables-save output: %v", scanner.Err())
+		zap.L().Error("Failed to read iptables-save output", zap.String("error", scanner.Err().Error()))
 		return nil, scanner.Err()
 	}
 

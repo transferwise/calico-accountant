@@ -5,12 +5,30 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/golang/glog"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"log"
+
 	"github.com/monzo/calico-accountant/metrics"
 	"github.com/monzo/calico-accountant/watch"
 )
 
 func main() {
+	loggerCfg := zap.NewProductionConfig()
+	loggerCfg.EncoderConfig.TimeKey = "timestamp"
+	loggerCfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	level, ok := os.LookupEnv("LOG_LEVEL")
+	if !ok {
+		level = "INFO"
+	}
+	loggerCfg.Level.UnmarshalText([]byte(level))
+	logger, err := loggerCfg.Build()
+	if err != nil {
+		log.Fatalf("can't initialize zap logger: %v", err)
+	}
+	zap.ReplaceGlobals(logger)
+	defer logger.Sync()
+
 	flag.Parse()
 
 	port, ok := os.LookupEnv("METRICS_SERVER_PORT")
@@ -24,13 +42,13 @@ func main() {
 		var err error
 		minCounter, err = strconv.Atoi(minCounterStr)
 		if err != nil {
-			glog.Fatalf("Failed to parse minimum counter: %v", err)
+			zap.L().Fatal("Failed to parse minimum counter", zap.String("error", err.Error()))
 		}
 	}
 
 	cw, err := watch.New()
 	if err != nil {
-		glog.Fatalf("Error setting up calico watcher: %v", err)
+		zap.L().Fatal("Error setting up calico watcher", zap.String("error", err.Error()))
 	}
 
 	metrics.Run(cw, port, minCounter)
